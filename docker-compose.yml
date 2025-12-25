@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: production_ml_postgres
+    environment:
+      POSTGRES_USER: mluser
+      POSTGRES_PASSWORD: mlpassword
+      POSTGRES_DB: mldb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mluser"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.8.1
+    container_name: production_ml_mlflow
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://mluser:mlpassword@postgres:5432/mldb
+      --default-artifact-root file:///mlruns
+      --host 0.0.0.0
+      --port 5000
+    ports:
+      - "5000:5000"
+    environment:
+      - MLFLOW_BACKEND_STORE_URI=postgresql://mluser:mlpassword@postgres:5432/mldb
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./mlruns:/mlruns
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: production_ml_api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://mluser:mlpassword@postgres:5432/mldb
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    volumes:
+      - ./models:/app/models
+      - ./mlruns:/app/mlruns
+      - ./feature_store:/app/feature_store
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: production_ml_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+
